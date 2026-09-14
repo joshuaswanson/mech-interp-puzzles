@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How a tiny transformer counts unique letters</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<style>
+/*__CSS__*/
+</style>
+</head>
+<body>
+<div id="tip" class="tip" role="tooltip"></div>
+<main>
+
+<header>
+  <h1>How a tiny transformer counts unique letters</h1>
+  <p class="lede">A 2-layer attention-only transformer reads ten letters and says how many different ones there are. Every number on this page is computed live from the real model's weights. The input bar stays at the top while you scroll, so you can change the letters at any point and watch every figure update.</p>
+</header>
+
+<div class="editor-bar" id="editor-bar">
+  <div class="control"><span>input</span><input id="seq" class="seq" maxlength="10" spellcheck="false" autocomplete="off" aria-label="ten letters from a to j" title="type ten letters from a to j"></div>
+  <div class="stats">
+    <div class="stat"><span class="label">different letters</span> <span class="value num" id="true-count"></span></div>
+    <div class="stat"><span class="label">model's answer</span> <span class="value num" id="pred-count"></span></div>
+  </div>
+</div>
+
+<p>Type ten letters from a to j in the bar. The model sees twelve tokens. Position 0 is a fixed start token $\mathrm{BOS}$, positions 1 to 10 are the letters, and position 11 is a fixed token $\mathrm{ANS}$ that means "answer now". The answer is read off at position 11. Each token starts as a fixed 32-number vector (its embedding). Two layers of four attention heads each add to those vectors. Then ten answer vectors score the final vector at position 11, and the highest score wins.</p>
+
+<section id="attention">
+  <h2>Attention matrix</h2>
+  <p>Pick a layer and a head. Queries run along the top, keys down the left, and each column is one query position's attention weights, which add up to 1. Darker is larger. Empty cells are masked (a key that comes after its query). Click a cell to highlight its column; the cards in the counter section jump here.</p>
+  <p>With layer 0 selected, the <b>layer 0 key rankings</b> appear under the matrix. In layer 0 a score depends only on the two tokens, so each head ranks the key letters in one fixed order for ordinary queries and in a different fixed order for the $\mathrm{ANS}$ query. The rankings are read straight from the score tables and do not depend on the input. With layer 0 selected, every column of the matrix is that head attending to the highest-ranked letter available in its prefix. That makes each layer-0 head a detector for its top-ranked letter: whether it found that letter is one bit, stored in the vector at that position. The four heads look for $\mathtt{a}$, $\mathtt{h}$, $\mathtt{d}$, $\mathtt{g}$ at ordinary positions and for $\mathtt{i}$, $\mathtt{j}$, $\mathtt{c}$, $\mathtt{e}$ at $\mathrm{ANS}$, eight bits from four heads. The last two letters get special treatment: a $\mathtt{b}$ query reverses every ranking and an $\mathtt{f}$ query has almost none, so the vectors at $\mathtt{b}$ and $\mathtt{f}$ positions look unlike any other and layer 1 can find them directly.</p>
+  <div class="figure">
+    <div class="controls">
+      <div class="control"><span>which head</span><div class="seg" id="matrix-layer-seg"></div><div class="seg" id="matrix-head-seg"></div></div>
+      <div class="control"><span>show</span><div class="seg" id="matrix-seg"></div></div>
+      <div class="control"><span id="matrix-summary"></span></div>
+    </div>
+    <div class="matrix-wrap"><div class="matrix" id="matrix"></div></div>
+    <p class="figure-caption">Hover a cell for its weight and its raw score.</p>
+    <div class="rankings-block">
+      <div class="table-wrap"><table id="rankings"></table></div>
+      <p class="figure-caption" id="rankings-note"></p>
+    </div>
+  </div>
+
+</section>
+
+<section id="counting">
+  <h2>Layer 1: four heads that add up the bits</h2>
+  <p>By now the vectors are no longer just tokens. After layer 0, the vector at position $j$ is its token's embedding plus what the four layer-0 heads wrote there, and what they wrote is <b>which letter each of them found</b>. Those four letters are listed per position in the walkthrough table below. At $\mathrm{ANS}$ it is the $\mathrm{ANS}$ embedding plus the four letters found with the $\mathrm{ANS}$ rankings. Layer 1's queries, keys and values are all computed from these stamped vectors. That is the whole trick: layer 0 stamps every position with "which of $\mathtt{a}$, $\mathtt{h}$, $\mathtt{d}$, $\mathtt{g}$ have appeared so far", and layer 1 reads the stamps.</p>
+  <p>Each layer-1 head, at the $\mathrm{ANS}$ position, adds one unit along a fixed "count direction" for every letter of its group that is present: head 0 for $\mathtt{b}$, head 1 for $\mathtt{f}$, head 2 for $\mathtt{a}$ $\mathtt{d}$ $\mathtt{g}$ $\mathtt{h}$, head 3 for $\mathtt{c}$ $\mathtt{e}$ $\mathtt{i}$ $\mathtt{j}$. Three of them put the count in <b>what they copy</b> (the value at the position they attend to). One puts it in <b>how much attention stays on</b> $\mathrm{BOS}$. The walkthrough below shows the arithmetic for one head at a time.</p>
+  <p>To read the number a head adds, measure its output by its <b>count slope</b>, the amount it pushes the answer toward larger counts (the slope of its ten answer logits against the answer index). Subtract the head's baseline (its slope when none of its letters are present) and divide by the size of one unit.</p>
+  <div class="figure">
+    <div class="counters" id="counters"></div>
+    <div class="sumbar">
+      <div class="track" id="sum-track"></div>
+      <div class="total" id="sum-total"></div>
+    </div>
+    <p class="figure-caption">Each card: the letters the head counts (dark when present), its attention weights from $\mathrm{ANS}$ over the twelve positions, and the count read from its output. Click a card to walk through that head below and to show it in the matrix above.</p>
+  </div>
+
+  <h3>Walkthrough for one head</h3>
+  <div class="figure">
+    <div class="controls">
+      <div class="control"><span>head</span><div class="seg" id="walk-seg"></div></div>
+    </div>
+    <p id="walk-text" class="walk-text"></p>
+    <div class="table-wrap"><table id="walk-table"></table></div>
+    <p class="figure-caption" id="walk-note"></p>
+  </div>
+</section>
+
+<section id="readout">
+  <h2>The readout: turning "count" into an answer</h2>
+  <p>After layer 1, the vector at $\mathrm{ANS}$ is roughly $U$ times the count direction plus a fixed offset, where $U$ is the number of different letters. Each answer token $c$ takes a dot product with it. The answer tokens are arranged so that this dot product is a downward parabola in $c$ whose peak sits at $c \approx U$:</p>
+  <div class="eq">$$\ell_c \approx 32.5\, U c - 16.2\, c^2 - 9.9\, c + \text{const}.$$</div>
+  <p>Answer token $\#c$ "wants" the count to be near $c$, and the quadratic penalty makes exactly one of them win.</p>
+  <div class="figure">
+    <svg id="readout-chart" class="chart" role="img" aria-label="model logits for answers 1 to 10 with the quadratic fit"></svg>
+    <div class="legend">
+      <span><span class="sw bar"></span>model logit</span>
+      <span><span class="sw win"></span>the winning answer</span>
+      <span><span class="sw line"></span><span id="fit-label"></span></span>
+    </div>
+    <p class="figure-caption" id="readout-summary"></p>
+    <details><summary>Show the numbers as a table</summary><table id="readout-table"></table></details>
+  </div>
+</section>
+
+<section>
+  <h2>The whole thing in one breath</h2>
+  <p>The answer is a sum of ten yes/no bits, one per letter. Layer 0 computes eight of them with four detector heads, each used twice (once at ordinary positions, once at $\mathrm{ANS}$), and marks the other two letters so they can be found by attention. Layer 1 adds the bits along one direction with four heads that split the alphabet 1 + 1 + 4 + 4. The answer tokens read the total with a parabola that peaks at the right count.</p>
+  <p>The accompanying notebook shows the evidence for each step, including patching experiments that remove one detector at a time and watch the count drop by exactly one.</p>
+</section>
+
+</main>
+<script>window.__MODEL__ = __MODEL_JSON__;</script>
+<script>
+/*__MODEL_JS__*/
+</script>
+<script>
+/*__APP_JS__*/
+</script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  if (window.renderMathInElement) window.renderMathInElement(document.body, { delimiters: [{ left: "$$", right: "$$", display: true }, { left: "$", right: "$", display: false }], throwOnError: false });
+});
+</script>
+</body>
+</html>
